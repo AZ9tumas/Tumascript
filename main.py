@@ -462,7 +462,7 @@ class Parser:
         #print(self.current_tok)
         #print('RESULT: ',res)
         if not res.error and self.current_tok.tokentype != TT_EOF:
-            print(res.node)
+            #print(res.node)
             return res.failure(Error(self.current_tok.pos_start, self.current_tok.pos_end, 'InvalidSyntaxError', "Expected '+', '-', '/', '*' lol nub"))
         return res
 
@@ -591,7 +591,7 @@ class Parser:
         
         res.register(self.advance())
         #self.bin_op(self.comp_expr, ((TT_KEYWORD, "and"), (TT_KEYWORD, "or")))
-        print(self.current_tok)
+        #print(self.current_tok)
         return res.success(WhileNode(condition, body))
 
     def call(self):
@@ -792,7 +792,7 @@ class Parser:
         res.register(self.advance())
         node_to_return = res.register(self.expr())
         if res.error: return res
-        print('ayy')
+        #print('ayy')
         return res.success(FuncDefNode(var_name_tok, arg_name_toks, node_to_return))
 
 
@@ -1240,11 +1240,11 @@ class Interpreter:
         body_node = node.body_node
         arg_names = [arg_name.tokenValue for arg_name in node.arg_name_tokens]
         func_value = Function(func_name, body_node, arg_names).set_context(context).set_pos(node.pos_start, node.pos_end)
-        print(func_name, body_node, arg_names, func_value)
+        #print(func_name, body_node, arg_names, func_value)
         if node.var_name_tok:
             context.symbol_table.set(func_name, func_value)
 
-        print(context.symbol_table.symbols)
+        #print(context.symbol_table.symbols)
         return func_value
 
     def visit_CallNode(self, node, context):
