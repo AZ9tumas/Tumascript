@@ -6,4 +6,4 @@ while True:
     result, error = main.run('<stdin>',code)
     
     if error: print(error.as_string())
-    else: print(result)
+    elif result: print(result)
