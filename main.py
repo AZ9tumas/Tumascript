@@ -2,7 +2,7 @@
 #######################################
 # IMPORTS
 #######################################
-from os import sendfile
+
 import string
 from string_with_arrows import *
 import math
@@ -32,6 +32,8 @@ TT_DIV      = 'DIV'
 TT_MOD      = 'MOD'
 TT_POW      = 'POW'
 TT_EQUALS   = 'EQUAL'
+TT_PLUS_EQUALS = 'PLUS_EQUALS'
+TT_MINUS_EQUALS = 'MINUS_EQUALS'
 #Round Brackets
 TT_LPAREN   = 'LPAREN'
 TT_RPAREN   = 'RPAREN'
@@ -98,6 +100,9 @@ class Error:
         result += f'{colors.WARNING}File {self.pos_start.fn}; Line: {self.pos_start.ln + 1}{colors.ENDC}'
         result += '\n\n' + string_with_arrows(self.pos_start.ftext, self.pos_start, self.pos_end)
         return result
+
+    def __repr__(self):
+        return self.as_string()
 
 class Token:
     def __init__(self, TT, TV=None, pos_start = None, pos_end = None):
@@ -213,12 +218,19 @@ class Lexer:
                 
             
             elif self.current_char == '+':
-                tokens.append(Token(TT_PLUS, pos_start=self.pos))
                 self.advance()
+                if self.current_char == '=':
+                    tokens.append(Token(TT_PLUS_EQUALS, pos_start=self.pos))
+                    self.advance()
+                else:
+                    tokens.append(Token(TT_PLUS, pos_start=self.pos))
             elif self.current_char == '-':
                 self.advance()
                 if self.current_char == '>':
                     tokens.append(Token(TT_ARROW, pos_start=self.pos))
+                    self.advance()
+                elif self.current_char == '=':
+                    tokens.append(Token(TT_MINUS_EQUALS, pos_start=self.pos))
                     self.advance()
                 else:
                     tokens.append(Token(TT_MINUS, pos_start=self.pos))
@@ -227,12 +239,12 @@ class Lexer:
                 tokens.append(Token(TT_MUL, pos_start=self.pos))
                 self.advance()
             elif self.current_char == '/':
-                if self.match(1, '//'):
-                    self.advance()
-                    self.make_comment()
-                    continue
-                tokens.append(Token(TT_DIV, pos_start=self.pos))
                 self.advance()
+                if self.current_char == '/':
+                    errors = self.make_comment()
+                    if errors: return [], errors
+                else:
+                    tokens.append(Token(TT_DIV, pos_start=self.pos))
             elif self.current_char == '%':
                 tokens.append(Token(TT_MOD, pos_start=self.pos))
                 self.advance()
@@ -242,6 +254,12 @@ class Lexer:
             elif self.current_char == ')':
                 tokens.append(Token(TT_RPAREN, pos_start=self.pos))
                 self.advance()
+            elif self.current_char == '"':
+                token = self.make_string()
+                if isinstance(token, Error):
+                    return [], token
+
+                tokens.append(token)
             else:
                 pos_start = self.pos.copy()
                 char = self.current_char
@@ -257,13 +275,14 @@ class Lexer:
 
     def make_comment(self):
         self.advance()
-        comment = ''
-        while self.current_char != '/' and self.match(1, '//') != True:
-            if self.current_char == None: return
-            comment += self.current_char
+        pos_start = self.pos.copy()
+        previous_char = ''
+        while self.current_char != None:
+            if previous_char == '/' and self.current_char == '/': break
+            previous_char = self.current_char
             self.advance()
-        self.advance(2)
-        return
+        if self.current_char == None: return Error(pos_start, self.pos, 'Incomplete Comment', "Expected '//' to complete the commment, got EOF")
+        self.advance()
 
     def make_not_equals(self):
         pos_start = self.pos.copy()
@@ -303,12 +322,49 @@ class Lexer:
         tok_type = TT_KEYWORD if identifier in KEYWORDS else TT_IDNTIFR
         return Token(tok_type, identifier, pos_start, self.pos)
 
+    def make_string(self):
+        string = ''
+        pos_start = self.pos.copy()
+        escape_character = False
+        self.advance()
+
+        escape_characters = {
+            'n':'\n',
+            't':'\t'
+        }
+
+        while self.current_char != None and self.current_char != '"':
+            if escape_character:
+                string += escape_characters.get(self.current_char, self.current_char)
+            else:
+
+                if self.current_char == '\\':
+                    escape_character = True
+                else:
+                    string += self.current_char
+            self.advance()
+            
+        if self.current_char == None: return Error(pos_start, self.pos, 'Unterminated String', "Expected '\"' to close string, got EOF")
+
+        self.advance()
+        return Token(TT_STRING, string, pos_start, self.pos)
+
 
 #######################################
 # NODES
 #######################################
 
 class NumberNode:
+    def __init__(self, tok):
+        self.tok = tok
+
+        self.pos_start = self.tok.pos_start
+        self.pos_end = self.tok.pos_end
+
+    def __repr__(self):
+        return f'{self.tok}'
+
+class StringNode:
     def __init__(self, tok):
         self.tok = tok
 
@@ -408,6 +464,15 @@ class CallNode:
             self.pos_end = self.arg_nodes[len(self.arg_nodes)-1].pos_end
         else:
             self.pos_end = self.node_to_call.pos_end
+
+class ShorcutVarAssignNode:
+    def __init__(self, var_name_token, op, valueNode=None):
+        self.var_name_token = var_name_token
+        self.op = op
+        self.valueNode = valueNode
+
+        self.pos_start = var_name_token.pos_start
+        self.pos_end = valueNode.pos_end if valueNode != None else self.op.pos_end
 
 
 
@@ -637,6 +702,10 @@ class Parser:
             res.register(self.advance())
             return res.success(NumberNode(tok))
 
+        elif tok.tokentype == TT_STRING:
+            res.register(self.advance())
+            return res.success(StringNode(tok))
+
         elif tok.tokentype == TT_IDNTIFR:
             res.register(self.advance())
             return res.success(VarAccessNode(tok))
@@ -706,7 +775,6 @@ class Parser:
             if not var:
                 return res.failure(Error(self.current_tok.pos_start, self.current_tok.pos_end, 'RunTimeError -> Variable not defined', f'{self.current_tok.tokenValue} is not defined'))
 
-            
             var = self.current_tok
             res.register(self.advance())
 
@@ -717,7 +785,17 @@ class Parser:
                 expr = res.register(self.expr())
                 if res.error: return res
                 return res.success(VarAssignNode(var, expr))
-                
+            elif self.current_tok.tokentype in (TT_PLUS_EQUALS, TT_MINUS_EQUALS):
+                op = self.current_tok
+                res.register(self.advance())
+                expr = res.register(self.expr())
+                if res.error: return res
+                if op.tokentype == TT_PLUS_EQUALS: op.tokentype = TT_PLUS
+                if op.tokentype == TT_MINUS_EQUALS: op.tokentype = TT_MINUS
+                var_name = var
+                return res.success(VarAssignNode(var,BinOpNode(VarAccessNode(var), op, expr)))
+                #return res.success(ShorcutVarAssignNode(var,op, expr))
+                    
             self.current_tok = var
             self.tok_idx -= 1
 
@@ -836,6 +914,8 @@ class Function:
             if i == None: i = 0
             arg_name = self.arg_names[i]
             arg_value = args[i]
+            if isinstance(arg_value, Error):
+                return arg_value
             arg_value.set_context(new_context)
             new_context.symbol_table.set(arg_name, arg_value)
 
@@ -914,6 +994,40 @@ class Number:
 
     def __repr__(self):
         return str(self.value)
+
+class String(Number):
+    def __init__(self, value):
+        self.value = value
+        self.error = None
+
+        self.set_pos()
+        self.set_context()
+
+    def set_pos(self, pos_start = None, pos_end = None):
+        self.pos_start = pos_start
+        self.pos_end = pos_end
+        return self
+
+    def set_context(self, context=None):
+        self.context = context
+        return self
+
+    def added_to(self, other):
+        if not isinstance(other, Function) and not isinstance(self.value, Function):
+            return String((isinstance(self.value, String) and self.value.value or isinstance(self.value, Number) and self.value.value or isinstance(self.value, Boolean) and self.value.value or self.value) + other.value)
+
+    def multiplied_by(self, other):
+        if not isinstance(other, Function) and not isinstance(self.value, Function):
+            return String((isinstance(self.value, String) and self.value.value or isinstance(self.value, Number) and self.value.value or isinstance(self.value, Boolean) and self.value.value or self.value) * other.value)
+
+    def copy(self):
+        copy = String(self.value)
+        copy.set_pos(self.pos_start, self.pos_end)
+        copy.set_context(self.context)
+        return copy
+
+    def __repr__(self):
+        return f"{self.value}"
 
 class Boolean:
     def __init__(self, value):
@@ -1094,59 +1208,64 @@ class Interpreter:
         return Number(node.tok.tokenValue).set_pos(node.pos_start, node.pos_end).set_context(context)
     
     def visit_BinOpNode(self, node, context):
-        left = self.visit(node.left_node, context)
-        right = self.visit(node.right_node, context)
 
-        if isinstance(left, Error):
-            return left
+        try:
+            left = self.visit(node.left_node, context)
+            right = self.visit(node.right_node, context)
+
+            if isinstance(left, Error):
+                return left
         
-        if isinstance(right, Error):
-            return right
+            if isinstance(right, Error):
+                return right
 
-        if left.error: return left
-        if right.error: return right
-        #print(left, right)
+            if left.error: return left
+            if right.error: return right
+            #print(left, right)
 
-        if node.op.tokentype == TT_PLUS:
-            result = left.added_to(right)
-        elif node.op.tokentype == TT_MINUS:
-            result = left.subbed_by(right)
-        elif node.op.tokentype == TT_DIV:
-            result = left.divided_by(right)
-        elif node.op.tokentype == TT_MUL:
-            result = left.multiplied_by(right)
-        elif node.op.tokentype == TT_MOD:
-            result = left.modded_by(right)
-        elif node.op.tokentype == TT_POW:
-            result = left.power_of(right)
-        elif node.op.tokentype == TT_ISEQUAL:
-            left = Boolean(left)
-            result = left.comp_equal(right)
-        elif node.op.tokentype == TT_SMALLER_THAN_EQUAL_TO:
-            left = Boolean(left)
-            result = left.comp_lesser_equal(right)
-        elif node.op.tokentype == TT_GREATER_THAN_EQUAL_TO:
-            left = Boolean(left)
-            result = left.comp_greater_equal(right)
-        elif node.op.tokentype == TT_SMALLER_THAN:
-            left = Boolean(left)
-            result = left.comp_lesser(right)
-        elif node.op.tokentype == TT_GREATER_THAN:
-            left = Boolean(left)
-            result = left.comp_greater(right)
-        elif node.op.tokentype == TT_NOT:
-            left = Boolean(left)
-            result = left.comp_not_equal(right)
-        elif node.op.tokentype == TT_KEYWORD and node.op.tokenValue == 'and':
-            left = Boolean(left)
-            result = left.comp_and(right)
-        elif node.op.tokentype == TT_KEYWORD and node.op.tokenValue == 'or':
-            left = Boolean(left)
-            result = left.comp_or(right)
+            if node.op.tokentype == TT_PLUS:
+                result = left.added_to(right)
+            elif node.op.tokentype == TT_MINUS:
+                result = left.subbed_by(right)
+            elif node.op.tokentype == TT_DIV:
+                result = left.divided_by(right)
+            elif node.op.tokentype == TT_MUL:
+                result = left.multiplied_by(right)
+            elif node.op.tokentype == TT_MOD:
+                result = left.modded_by(right)
+            elif node.op.tokentype == TT_POW:
+                result = left.power_of(right)
+            elif node.op.tokentype == TT_ISEQUAL:
+                left = Boolean(left)
+                result = left.comp_equal(right)
+            elif node.op.tokentype == TT_SMALLER_THAN_EQUAL_TO:
+                left = Boolean(left)
+                result = left.comp_lesser_equal(right)
+            elif node.op.tokentype == TT_GREATER_THAN_EQUAL_TO:
+                left = Boolean(left)
+                result = left.comp_greater_equal(right)
+            elif node.op.tokentype == TT_SMALLER_THAN:
+                left = Boolean(left)
+                result = left.comp_lesser(right)
+            elif node.op.tokentype == TT_GREATER_THAN:
+                left = Boolean(left)
+                result = left.comp_greater(right)
+            elif node.op.tokentype == TT_NOT:
+                left = Boolean(left)
+                result = left.comp_not_equal(right)
+            elif node.op.tokentype == TT_KEYWORD and node.op.tokenValue == 'and':
+                left = Boolean(left)
+                result = left.comp_and(right)
+            elif node.op.tokentype == TT_KEYWORD and node.op.tokenValue == 'or':
+                left = Boolean(left)
+                result = left.comp_or(right)
 
 
-        if result.error: return result
-        return result.set_pos(node.pos_start, node.pos_end)
+            if result.error: return result
+            return result.set_pos(node.pos_start, node.pos_end)
+
+        except:
+            return Error(node.pos_start, node.pos_end, 'TypeError', 'Invalid operation')
 
     def visit_VarAccessNode(self, node, context):
         var_name = node.var_name_token.tokenValue if isinstance(node.var_name_token, Token) else node.var_name_token
@@ -1267,7 +1386,20 @@ class Interpreter:
 
         return return_value
 
+    def visit_StringNode(self, node, context):
+        return String(node.tok.tokenValue).set_context(context).set_pos(node.pos_start, node.pos_end)
 
+    def visit_ShorcutVarAssignNode(self, node, context):
+        op = node.op
+        var_name = node.var_name_token.tokenValue
+        value = None
+        if node.valueNode: value = self.visit(node.valueNode, context)
+
+        if op.tokentype == TT_PLUS_EQUALS:
+            previous_value = context.symbol_table.get(var_name)
+
+
+        
 
 global_symbol_table = SymbolTable()
 global_symbol_table.set('null', Number(0))
@@ -1284,7 +1416,7 @@ def run(fn, code):
     lexer = Lexer(fn, code)
     tokens, error = lexer.Make_Tokens()
     if error: return None, error
-    #print(tokens)
+    print(tokens)
 
     # Create context table
     context = Context('<module>')
@@ -1295,7 +1427,7 @@ def run(fn, code):
     parser = Parser(tokens, context)
     ast = parser.parse()
     if ast.error: return None, ast.error
-    #print(ast.node)
+    print(ast.node)
 
     # Run program
     interpreter = Interpreter()
